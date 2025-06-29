@@ -1,0 +1,219 @@
+#!/bin/bash
+
+breakFilePath="/home/theban-legion/Downloads/medieval-fanfare-6826.mp3"
+workFilePath="/home/theban-legion/Downloads/draw-sword1-44724.mp3"
+
+while getopts 'psl' PARAMETER; do
+	case "$PARAMETER" in
+		l)
+			lap_timer_flag=1 ;;
+		p)
+			pomodoro_flag=1 ;;
+		s)
+			statistics_flag=1 ;;
+	esac
+done
+
+
+
+usage() {
+	echo "Options:"
+	echo "-p pomodoro timer (25 min. on then 5 min. break)"
+	echo "-l lap timer (displays how long you've been on current lap)"
+	echo "-s statistics (displays average and other statistics after exit"
+	echo "Usage: $0 [start|reset|exit]"
+
+	echo "  start  : Start the stopwatch"
+	echo "  reset  : Reset the stopwatch to zero"
+	echo "  exit   : Terminate stopwatch"
+
+	echo ""
+	echo "While stopwatch is started, press l to record a lap or any other letter to exit"
+}
+
+# Initialize variables
+running=0
+lap_count=0
+lap_times=()
+
+get_elapsed_time() {
+	current_time=$(date +%s)
+	elapsed_time=$((current_time - start_time))
+}
+
+format_time() {
+	local seconds=$1
+	local hours=$((seconds / 3600))
+	local minutes=$(((seconds%3600) / 60))
+	local secs=$((seconds % 60))
+	printf "%02d:%02d:%02d" $hours $minutes $secs
+}
+
+display_time() {
+	get_elapsed_time
+	local formatted_time=$(format_time $elapsed_time)
+
+	echo -n "Time: $formatted_time  "
+	if [[ lap_timer_flag -eq 1 ]] &&  ( ! [[ -z "${last_lap_time+x}" ]] ) ; then
+		lap_time=$(( elapsed_time - last_lap_time ))
+		lap_time=$(format_time lap_time) # How does this work if it doesn't return anything?
+		printf "Lap-time: $lap_time"
+
+	fi
+}
+
+
+
+reset() {
+	start_time=0
+	elapsed_time=0
+	lap_times=()
+	running=0
+	lap_count=0
+	echo "Resetting stopwatch"
+}
+
+# Pomodoro timer
+pomodoro() { # TODO: FINISH THIS SO IT GIVES PEOPLE BREAKS
+	break_flag=0 # working if 0, breaking if 1
+	start_time=$(date +%s)
+	while true; do
+		display_time
+		printf "\r"
+		old_tty_settings=$(stty -g)
+		stty -echo -icanon
+		read -s -t 0.1 -n 1 pauseVar # if user presses any character
+		stty "$old_tty_settings"
+
+		if [ -n "$pauseVar" ]; then
+			break
+		fi
+
+		breakHandler
+	done
+}
+
+
+breakHandler(){
+	# turn to break
+	if [[ "$break_flag" -eq 0 ]] && [[ "$elapsed_time" -eq $(( 25 * 60 )) ]]; then
+		echo "Went to break"
+		break_flag=1
+		start_time=$(date +%s)
+		if ! [ -z "${PID+x}" ]; then # don't kill if PID isn't set
+			kill "$PID"
+		fi
+		ffplay -nodisp -loglevel 0 "$breakFilePath" &
+		PID=$!
+	fi
+
+	# turn to work
+	if [[ "$break_flag" -eq 1 ]] && [[ "$elapsed_time" -eq $(( 5 * 60 )) ]]; then
+		echo "Went to work"
+		break_flag=0
+		start_time=$(date +%s)
+		kill "$PID" # kill PID so processes don't stack up
+		ffplay -nodisp -loglevel 0 "$workFilePath" &
+		PID=$!
+	fi
+}
+
+
+
+# Start the stopwatch
+start() {
+	if [ $running -eq 0 ]; then
+		pauseVar=""
+		start_time=$(date +%s)
+		last_lap_time=0 # The time of the last lap
+		running=1
+		echo "Press l to record a lap or any other letter to exit"
+		echo "Starting stopwatch..."
+
+		while [ $running -eq 1 ]; do
+
+			display_time
+			printf "\r"
+			old_tty_settings=$(stty -g)
+			stty -echo -icanon
+			read -s -t 0.1 -n 1 pauseVar # if user presses any character
+			stty "$old_tty_settings"
+			if [ -n "$pauseVar" ]; then
+				get_elapsed_time # sets the elapsed_time variable globally
+				time_of_lap=$(( "$elapsed_time" - "$last_lap_time" ))
+				lap_times+=($time_of_lap)
+				lap_count=$(( lap_count + 1 ))
+				echo "" # for a newline
+				echo "LAP" "$lap_count" ":" "$time_of_lap"
+				last_lap_time=$elapsed_time
+				if [[ "$pauseVar" != "l" ]] ; then
+					running=0;
+					echo "" # for a newline
+					echo "Exiting"
+					break
+					echo "After break statement"
+				fi
+			fi
+		done
+	fi
+}
+
+statistics() {
+	average=0
+	best=${lap_times[0]}
+	worst=${lap_times[0]}
+	for lap in ${lap_times[@]} ; do
+		average=$(( average + lap ))
+		if (( lap > worst )); then
+			worst=$lap
+		fi
+		if (( lap < best )); then
+			best=$lap
+		fi
+	done
+	average=$( echo "scale=2; $average/$lap_count" | bc )
+
+	echo "             - - - --- Statistics --- - - -"
+	echo "AVERAGE TIME: $average"
+	echo "TOTAL LAPS: $lap_count"
+	printf "\n\n"
+
+	echo "Best lap:"  "$best"
+	echo "Worst lap:" "$worst"
+	echo "Lap  | Time"
+	echo "-----------"
+	counter=0
+	while (( counter < lap_count )); do
+		printf "%3d  |%3d  \n" "$((counter + 1))" "${lap_times[counter]}"
+		counter="$((counter + 1))"
+	done
+}
+
+
+# Main loop
+while true; do
+	read -p "Enter command (start, reset, exit): " command
+	case "${command,,}" in
+		start)
+			if [[ $pomodoro_flag -eq 1 ]] ; then
+				echo "Pomodoro flag active, automatically loops with sound"
+				pomodoro
+			else
+				start
+				if [[ $statistics_flag -eq 1 ]] ; then
+					statistics
+				fi
+			fi
+			;;
+		reset)
+			reset
+			;;
+		exit)
+			echo "Exiting stopwatch"
+			break
+			;;
+		*)
+			usage
+			;;
+	esac
+done
